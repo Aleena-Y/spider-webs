@@ -1,13 +1,29 @@
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-const gravitySlider = document.getElementById("gravitySlider");
-const gravityValue = document.getElementById("gravityValue");
+const gravitySlider =
+    document.getElementById("gravitySlider");
 
-let W = 0;
-let H = 0;
+const gravityValue =
+    document.getElementById("gravityValue");
+
+
+/* =========================================================
+   GLOBAL STATE
+========================================================= */
+
+let W = window.innerWidth;
+let H = window.innerHeight;
 
 let strands = [];
+
+/*
+    ALL physics particles live here.
+
+    A connection point is stored only ONCE in this array.
+    Multiple strands can reference the same particle.
+*/
+let particles = [];
 
 let drawing = false;
 let currentStrand = null;
@@ -19,7 +35,7 @@ let mouse = {
 
 
 /* =========================================================
-   SETTINGS
+   PHYSICS SETTINGS
 ========================================================= */
 
 const SEGMENT_LENGTH = 12;
@@ -27,349 +43,30 @@ const SEGMENT_LENGTH = 12;
 let GRAVITY = 0.28;
 
 const DAMPING = 0.985;
-const ITERATIONS = 10;
 
-const EDGE_DISTANCE = 20;
-const ATTACH_DISTANCE = 16;
+const SOLVER_ITERATIONS = 12;
+
+const EDGE_DISTANCE = 22;
+
+const ATTACH_DISTANCE = 18;
 
 const STRAND_WIDTH = 1.4;
-
-
-/* =========================================================
-   AUDIO SYSTEM
-========================================================= */
-
-let audioContext = null;
-let masterGain = null;
-let lastRustle = 0;
-
-
-/*
-    Browsers block audio until the user interacts
-    with the page.
-
-    We initialize it on the first pointer interaction.
-*/
-
-function initAudio() {
-
-    if (audioContext)
-        return;
-
-    audioContext =
-        new (
-            window.AudioContext ||
-            window.webkitAudioContext
-        )();
-
-    masterGain =
-        audioContext.createGain();
-
-    masterGain.gain.value = 0.18;
-
-    masterGain.connect(
-        audioContext.destination
-    );
-}
-
-
-async function resumeAudio() {
-
-    initAudio();
-
-    if (
-        audioContext &&
-        audioContext.state === "suspended"
-    ) {
-        await audioContext.resume();
-    }
-}
-
-
-/* =========================================================
-   SILK STRETCH SOUND
-========================================================= */
-
-function playStretchSound(intensity = 0.5) {
-
-    if (!audioContext)
-        return;
-
-    const now =
-        audioContext.currentTime;
-
-    /*
-        Short filtered noise gives a soft
-        silk/fabric pulling texture.
-    */
-
-    const bufferSize =
-        audioContext.sampleRate * 0.08;
-
-    const buffer =
-        audioContext.createBuffer(
-            1,
-            bufferSize,
-            audioContext.sampleRate
-        );
-
-    const data =
-        buffer.getChannelData(0);
-
-    for (let i = 0; i < bufferSize; i++) {
-
-        data[i] =
-            (Math.random() * 2 - 1);
-    }
-
-    const source =
-        audioContext.createBufferSource();
-
-    source.buffer = buffer;
-
-    const filter =
-        audioContext.createBiquadFilter();
-
-    filter.type = "bandpass";
-
-    filter.frequency.value =
-        1800 + intensity * 1800;
-
-    filter.Q.value = 1.2;
-
-    const gain =
-        audioContext.createGain();
-
-    gain.gain.setValueAtTime(
-        0.0001,
-        now
-    );
-
-    gain.gain.exponentialRampToValueAtTime(
-        0.045 * intensity,
-        now + 0.012
-    );
-
-    gain.gain.exponentialRampToValueAtTime(
-        0.0001,
-        now + 0.08
-    );
-
-    source
-        .connect(filter)
-        .connect(gain)
-        .connect(masterGain);
-
-    source.start(now);
-
-    source.stop(
-        now + 0.09
-    );
-}
-
-
-/* =========================================================
-   STICK / ATTACH SOUND
-========================================================= */
-
-function playAttachSound() {
-
-    if (!audioContext)
-        return;
-
-    const now =
-        audioContext.currentTime;
-
-
-    /*
-        Small low-frequency impact.
-    */
-
-    const oscillator =
-        audioContext.createOscillator();
-
-    const gain =
-        audioContext.createGain();
-
-    oscillator.type = "sine";
-
-    oscillator.frequency.setValueAtTime(
-        190,
-        now
-    );
-
-    oscillator.frequency.exponentialRampToValueAtTime(
-        80,
-        now + 0.09
-    );
-
-    gain.gain.setValueAtTime(
-        0.0001,
-        now
-    );
-
-    gain.gain.exponentialRampToValueAtTime(
-        0.12,
-        now + 0.005
-    );
-
-    gain.gain.exponentialRampToValueAtTime(
-        0.0001,
-        now + 0.1
-    );
-
-    oscillator
-        .connect(gain)
-        .connect(masterGain);
-
-    oscillator.start(now);
-
-    oscillator.stop(
-        now + 0.11
-    );
-
-
-    /*
-        Add a tiny high-frequency
-        "silk snap" component.
-    */
-
-    const click =
-        audioContext.createOscillator();
-
-    const clickGain =
-        audioContext.createGain();
-
-    click.type = "triangle";
-
-    click.frequency.value = 900;
-
-    clickGain.gain.setValueAtTime(
-        0.035,
-        now
-    );
-
-    clickGain.gain.exponentialRampToValueAtTime(
-        0.0001,
-        now + 0.035
-    );
-
-    click
-        .connect(clickGain)
-        .connect(masterGain);
-
-    click.start(now);
-
-    click.stop(
-        now + 0.04
-    );
-}
-
-
-/* =========================================================
-   WEB RUSTLE
-========================================================= */
-
-function playWebRustle(intensity) {
-
-    if (!audioContext)
-        return;
-
-    const now =
-        performance.now();
-
-    /*
-        Don't continuously generate sound.
-    */
-
-    if (
-        now - lastRustle < 180
-    ) {
-        return;
-    }
-
-    lastRustle = now;
-
-    const audioNow =
-        audioContext.currentTime;
-
-    const bufferSize =
-        audioContext.sampleRate * 0.12;
-
-    const buffer =
-        audioContext.createBuffer(
-            1,
-            bufferSize,
-            audioContext.sampleRate
-        );
-
-    const data =
-        buffer.getChannelData(0);
-
-    for (let i = 0; i < bufferSize; i++) {
-
-        /*
-            Fade the noise naturally.
-        */
-
-        const envelope =
-            1 - i / bufferSize;
-
-        data[i] =
-            (
-                Math.random() * 2 - 1
-            ) * envelope;
-    }
-
-    const source =
-        audioContext.createBufferSource();
-
-    source.buffer = buffer;
-
-    const filter =
-        audioContext.createBiquadFilter();
-
-    filter.type = "highpass";
-
-    filter.frequency.value =
-        2500;
-
-    const gain =
-        audioContext.createGain();
-
-    gain.gain.value =
-        0.012 * intensity;
-
-    source
-        .connect(filter)
-        .connect(gain)
-        .connect(masterGain);
-
-    source.start(audioNow);
-
-    source.stop(
-        audioNow + 0.12
-    );
-}
 
 
 /* =========================================================
    GRAVITY SLIDER
 ========================================================= */
 
-gravitySlider.addEventListener(
-    "input",
-    () => {
+gravitySlider.addEventListener("input", () => {
 
-        GRAVITY =
-            parseFloat(
-                gravitySlider.value
-            );
+    GRAVITY =
+        parseFloat(
+            gravitySlider.value
+        );
 
-        gravityValue.textContent =
-            GRAVITY.toFixed(2);
-    }
-);
+    gravityValue.textContent =
+        GRAVITY.toFixed(2);
+});
 
 
 /* =========================================================
@@ -415,6 +112,46 @@ resize();
 
 
 /* =========================================================
+   PARTICLE
+========================================================= */
+
+function createParticle(
+    x,
+    y,
+    pinned = false
+) {
+
+    const particle = {
+
+        x,
+        y,
+
+        oldX: x,
+        oldY: y,
+
+        /*
+            Only screen-edge particles are pinned.
+
+            Web-to-web connection points are NOT pinned.
+        */
+
+        pinned,
+
+        /*
+            Unique identifier makes debugging
+            connections easier.
+        */
+
+        id: particles.length
+    };
+
+    particles.push(particle);
+
+    return particle;
+}
+
+
+/* =========================================================
    DISTANCE
 ========================================================= */
 
@@ -428,75 +165,150 @@ function distance(a, b) {
 
 
 /* =========================================================
-   PARTICLE
-========================================================= */
-
-function makePoint(
-    x,
-    y,
-    pinned = false
-) {
-
-    return {
-
-        x,
-        y,
-
-        oldX: x,
-        oldY: y,
-
-        /*
-            Screen anchors are pinned.
-
-            Contact points are NOT pinned.
-        */
-
-        pinned
-    };
-}
-
-
-/* =========================================================
-   EDGE
+   EDGE DETECTION
 ========================================================= */
 
 function isOnEdge(x, y) {
 
     return (
         x <= EDGE_DISTANCE ||
-        y <= EDGE_DISTANCE ||
         x >= W - EDGE_DISTANCE ||
+        y <= EDGE_DISTANCE ||
         y >= H - EDGE_DISTANCE
     );
 }
 
 
+/* =========================================================
+   SNAP TO SCREEN EDGE
+========================================================= */
+
 function snapToEdge(x, y) {
 
-    let sx = x;
-    let sy = y;
+    /*
+        Find which edge is closest.
 
-    if (x <= EDGE_DISTANCE)
-        sx = 0;
+        This prevents an endpoint from sitting
+        slightly inside/outside the screen.
+    */
 
-    if (x >= W - EDGE_DISTANCE)
-        sx = W;
+    const distances = {
 
-    if (y <= EDGE_DISTANCE)
-        sy = 0;
+        left: Math.abs(x),
 
-    if (y >= H - EDGE_DISTANCE)
-        sy = H;
+        right: Math.abs(W - x),
+
+        top: Math.abs(y),
+
+        bottom: Math.abs(H - y)
+    };
+
+    let closestEdge = "left";
+
+    for (const edge in distances) {
+
+        if (
+            distances[edge] <
+            distances[closestEdge]
+        ) {
+
+            closestEdge = edge;
+        }
+    }
+
+
+    switch (closestEdge) {
+
+        case "left":
+            return {
+                x: 0,
+                y: Math.max(
+                    0,
+                    Math.min(H, y)
+                )
+            };
+
+        case "right":
+            return {
+                x: W,
+                y: Math.max(
+                    0,
+                    Math.min(H, y)
+                )
+            };
+
+        case "top":
+            return {
+                x: Math.max(
+                    0,
+                    Math.min(W, x)
+                ),
+                y: 0
+            };
+
+        case "bottom":
+            return {
+                x: Math.max(
+                    0,
+                    Math.min(W, x)
+                ),
+                y: H
+            };
+    }
+}
+
+
+/* =========================================================
+   CLOSEST POINT ON LINE
+========================================================= */
+
+function closestPoint(
+    px,
+    py,
+    x1,
+    y1,
+    x2,
+    y2
+) {
+
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+
+    const lengthSquared =
+        dx * dx +
+        dy * dy;
+
+    if (lengthSquared === 0) {
+
+        return {
+            x: x1,
+            y: y1
+        };
+    }
+
+    let t =
+        (
+            (px - x1) * dx +
+            (py - y1) * dy
+        ) /
+        lengthSquared;
+
+    t = Math.max(
+        0,
+        Math.min(1, t)
+    );
 
     return {
-        x: sx,
-        y: sy
+
+        x: x1 + dx * t,
+
+        y: y1 + dy * t
     };
 }
 
 
 /* =========================================================
-   FIND ATTACHMENT
+   FIND EXISTING WEB
 ========================================================= */
 
 function findAttachment(x, y) {
@@ -517,11 +329,8 @@ function findAttachment(x, y) {
             i++
         ) {
 
-            const a =
-                points[i];
-
-            const b =
-                points[i + 1];
+            const a = points[i];
+            const b = points[i + 1];
 
             const p =
                 closestPoint(
@@ -549,7 +358,7 @@ function findAttachment(x, y) {
 
                     strand,
 
-                    index: i,
+                    segmentIndex: i,
 
                     x: p.x,
 
@@ -564,63 +373,10 @@ function findAttachment(x, y) {
 
 
 /* =========================================================
-   CLOSEST POINT
+   CREATE WEB-TO-WEB CONNECTION
 ========================================================= */
 
-function closestPoint(
-    px,
-    py,
-    x1,
-    y1,
-    x2,
-    y2
-) {
-
-    const dx =
-        x2 - x1;
-
-    const dy =
-        y2 - y1;
-
-    const lenSq =
-        dx * dx +
-        dy * dy;
-
-    if (lenSq === 0) {
-
-        return {
-            x: x1,
-            y: y1
-        };
-    }
-
-    let t =
-        (
-            (px - x1) * dx +
-            (py - y1) * dy
-        ) / lenSq;
-
-    t = Math.max(
-        0,
-        Math.min(1, t)
-    );
-
-    return {
-
-        x:
-            x1 + dx * t,
-
-        y:
-            y1 + dy * t
-    };
-}
-
-
-/* =========================================================
-   CREATE MOVABLE CONTACT
-========================================================= */
-
-function createAttachmentPoint(
+function attachToExistingWeb(
     attachment
 ) {
 
@@ -631,23 +387,40 @@ function createAttachmentPoint(
         strand.points;
 
     const index =
-        attachment.index;
+        attachment.segmentIndex;
 
     /*
-        This is deliberately NOT pinned.
+        IMPORTANT:
 
-        It can move under gravity.
+        Create ONE movable particle.
 
-        The SAME object is shared by the
-        new strand.
+        This particle is inserted into the
+        existing strand AND returned so that
+        the new strand uses the exact same
+        object.
     */
 
     const contact =
-        makePoint(
+        createParticle(
             attachment.x,
             attachment.y,
             false
         );
+
+
+    /*
+        Insert the contact into the old strand.
+
+        Old:
+
+        A ───────────── B
+
+        New:
+
+        A ───── ● ───── B
+                ↑
+             contact
+    */
 
     points.splice(
         index + 1,
@@ -655,41 +428,53 @@ function createAttachmentPoint(
         contact
     );
 
+
     return contact;
 }
 
 
 /* =========================================================
-   CREATE PHYSICS STRAND
+   CREATE PHYSICAL STRAND
 ========================================================= */
 
-function createPhysicsStrand(
+function createStrand(
     start,
     end
 ) {
 
-    const d =
+    const length =
         distance(
             start,
             end
         );
 
+    if (length < SEGMENT_LENGTH * 1.5)
+        return null;
+
+
     const count =
         Math.max(
             3,
             Math.ceil(
-                d /
+                length /
                 SEGMENT_LENGTH
             )
         );
 
     const points = [];
 
+
     /*
-        Shared starting point.
+        VERY IMPORTANT:
+
+        Do not duplicate the start particle.
+
+        It remains shared with the existing
+        web or screen edge.
     */
 
     points.push(start);
+
 
     /*
         Interior particles.
@@ -704,29 +489,70 @@ function createPhysicsStrand(
         const t =
             i / count;
 
+        const x =
+            start.x +
+            (end.x - start.x) * t;
+
+        const y =
+            start.y +
+            (end.y - start.y) * t;
+
         points.push(
-            makePoint(
-
-                start.x +
-                    (end.x - start.x) * t,
-
-                start.y +
-                    (end.y - start.y) * t,
-
+            createParticle(
+                x,
+                y,
                 false
             )
         );
     }
 
+
     /*
-        Shared ending point.
+        VERY IMPORTANT:
+
+        Do not duplicate the endpoint either.
+
+        This is the same object belonging to
+        the target web or screen edge.
     */
 
     points.push(end);
 
-    return {
-        points
+
+    const strand = {
+
+        points,
+
+        /*
+            Each segment remembers its
+            natural length.
+
+            This lets the web stretch a tiny
+            amount without breaking.
+        */
+
+        restLengths: []
     };
+
+
+    for (
+        let i = 0;
+        i < points.length - 1;
+        i++
+    ) {
+
+        strand.restLengths.push(
+            distance(
+                points[i],
+                points[i + 1]
+            )
+        );
+    }
+
+
+    strands.push(strand);
+
+    return strand;
 }
 
 
@@ -753,22 +579,26 @@ function getPointerPosition(e) {
 
 
 /* =========================================================
-   POINTER DOWN
+   START DRAWING
 ========================================================= */
 
 canvas.addEventListener(
     "pointerdown",
-    async e => {
-
-        await resumeAudio();
+    e => {
 
         const p =
             getPointerPosition(e);
 
         let start = null;
 
+
         /*
-            Existing web takes priority.
+            FIRST:
+
+            Look for an existing web.
+
+            This allows a new strand to begin
+            directly from another strand.
         */
 
         const attachment =
@@ -777,18 +607,21 @@ canvas.addEventListener(
                 p.y
             );
 
+
         if (attachment) {
 
             start =
-                createAttachmentPoint(
+                attachToExistingWeb(
                     attachment
                 );
-
-            playAttachSound();
         }
 
+
         /*
-            Otherwise screen edge.
+            SECOND:
+
+            Otherwise, allow starting from
+            the screen edge.
         */
 
         else if (
@@ -805,15 +638,16 @@ canvas.addEventListener(
                 );
 
             start =
-                makePoint(
+                createParticle(
                     edge.x,
                     edge.y,
                     true
                 );
         }
 
+
         /*
-            Can't start in empty space.
+            Empty space cannot start a web.
         */
 
         else {
@@ -822,19 +656,23 @@ canvas.addEventListener(
         }
 
 
+        /*
+            Temporary strand.
+
+            Only two points are needed while
+            the user is dragging.
+        */
+
         currentStrand = {
 
             start,
 
-            points: [
-                start,
-                makePoint(
+            currentEnd:
+                createParticle(
                     p.x,
-                    p.y
+                    p.y,
+                    false
                 )
-            ],
-
-            temporary: true
         };
 
         drawing = true;
@@ -847,7 +685,7 @@ canvas.addEventListener(
 
 
 /* =========================================================
-   POINTER MOVE
+   DRAGGING
 ========================================================= */
 
 canvas.addEventListener(
@@ -861,9 +699,7 @@ canvas.addEventListener(
             getPointerPosition(e);
 
         const end =
-            currentStrand.points[
-                currentStrand.points.length - 1
-            ];
+            currentStrand.currentEnd;
 
         end.x = p.x;
         end.y = p.y;
@@ -871,41 +707,13 @@ canvas.addEventListener(
         end.oldX = p.x;
         end.oldY = p.y;
 
-        /*
-            Occasional subtle silk stretching sound.
-        */
-
-        const start =
-            currentStrand.start;
-
-        const length =
-            distance(
-                start,
-                end
-            );
-
-        const intensity =
-            Math.min(
-                1,
-                length / 500
-            );
-
-        if (
-            Math.random() < 0.025
-        ) {
-
-            playStretchSound(
-                intensity
-            );
-        }
-
         draw();
     }
 );
 
 
 /* =========================================================
-   POINTER UP
+   FINISH STRAND
 ========================================================= */
 
 canvas.addEventListener(
@@ -921,11 +729,29 @@ canvas.addEventListener(
         const start =
             currentStrand.start;
 
+        /*
+            Remove temporary endpoint from
+            global physics particles.
+
+            It was only used for the preview.
+        */
+
+        const temporary =
+            currentStrand.currentEnd;
+
+        particles =
+            particles.filter(
+                particle =>
+                    particle !== temporary
+            );
+
+
         let end = null;
 
-        /*
-            Existing web.
-        */
+
+        /* -----------------------------------------
+           WEB-TO-WEB
+        ----------------------------------------- */
 
         const attachment =
             findAttachment(
@@ -933,19 +759,19 @@ canvas.addEventListener(
                 p.y
             );
 
+
         if (attachment) {
 
             end =
-                createAttachmentPoint(
+                attachToExistingWeb(
                     attachment
                 );
-
-            playAttachSound();
         }
 
-        /*
-            Screen edge.
-        */
+
+        /* -----------------------------------------
+           WEB-TO-SCREEN
+        ----------------------------------------- */
 
         else if (
             isOnEdge(
@@ -961,18 +787,17 @@ canvas.addEventListener(
                 );
 
             end =
-                makePoint(
+                createParticle(
                     edge.x,
                     edge.y,
                     true
                 );
-
-            playAttachSound();
         }
 
 
         /*
-            Invalid endpoint.
+            If neither is valid,
+            the strand is cancelled.
         */
 
         if (!end) {
@@ -988,17 +813,16 @@ canvas.addEventListener(
 
 
         /*
-            Create the physical strand
-            using the SAME endpoint objects.
+            Create the final physical strand.
+
+            start and end are shared particles.
         */
 
-        const strand =
-            createPhysicsStrand(
-                start,
-                end
-            );
+        createStrand(
+            start,
+            end
+        );
 
-        strands.push(strand);
 
         currentStrand = null;
 
@@ -1010,20 +834,18 @@ canvas.addEventListener(
 
 
 /* =========================================================
-   PHYSICS
+   GLOBAL PHYSICS
 ========================================================= */
 
-function simulateStrand(strand) {
-
-    const points =
-        strand.points;
-
+function simulatePhysics() {
 
     /*
-        Verlet integration.
+        -----------------------------------------------------
+        1. MOVE EVERY FREE PARTICLE
+        -----------------------------------------------------
     */
 
-    for (const p of points) {
+    for (const p of particles) {
 
         if (p.pinned)
             continue;
@@ -1043,122 +865,170 @@ function simulateStrand(strand) {
 
         p.y += vy;
 
+        /*
+            Gravity.
+        */
+
         p.y += GRAVITY;
     }
 
 
     /*
-        Constraint solver.
+        -----------------------------------------------------
+        2. SOLVE ALL STRAND CONSTRAINTS TOGETHER
+        -----------------------------------------------------
+
+        This is the other important change.
+
+        Previously each strand could try to move a
+        shared contact independently.
+
+        Now EVERY strand constraint is solved in
+        one global physics pass.
+
+        Therefore:
+
+                WEB A
+        ──────────●──────────
+                  │
+                  │
+                  │
+                 WEB B
+
+        behaves as one connected physical system.
     */
 
     for (
         let iteration = 0;
-        iteration < ITERATIONS;
+        iteration < SOLVER_ITERATIONS;
         iteration++
     ) {
 
-        for (
-            let i = 0;
-            i < points.length - 1;
-            i++
-        ) {
+        for (const strand of strands) {
 
-            const a =
-                points[i];
+            const points =
+                strand.points;
 
-            const b =
-                points[i + 1];
+            for (
+                let i = 0;
+                i < points.length - 1;
+                i++
+            ) {
 
-            const dx =
-                b.x - a.x;
+                const a =
+                    points[i];
 
-            const dy =
-                b.y - a.y;
+                const b =
+                    points[i + 1];
 
-            const d =
-                Math.hypot(
-                    dx,
-                    dy
-                );
+                const restLength =
+                    strand.restLengths[i] ||
+                    SEGMENT_LENGTH;
 
-            if (d === 0)
-                continue;
+                const dx =
+                    b.x - a.x;
 
-            const difference =
-                (
-                    d -
-                    SEGMENT_LENGTH
-                ) / d;
+                const dy =
+                    b.y - a.y;
 
-            const offsetX =
-                dx *
-                difference *
-                0.5;
+                const d =
+                    Math.hypot(
+                        dx,
+                        dy
+                    );
 
-            const offsetY =
-                dy *
-                difference *
-                0.5;
+                if (d === 0)
+                    continue;
 
 
-            if (!a.pinned) {
+                /*
+                    Difference between actual
+                    and desired length.
+                */
 
-                a.x += offsetX;
-                a.y += offsetY;
-            }
+                const difference =
+                    (
+                        d -
+                        restLength
+                    ) / d;
 
 
-            if (!b.pinned) {
+                /*
+                    A little elasticity.
 
-                b.x -= offsetX;
-                b.y -= offsetY;
+                    1.0 = perfectly rigid
+                    0.9 = slightly elastic
+                    etc.
+                */
+
+                const elasticity = 0.94;
+
+                const offsetX =
+                    dx *
+                    difference *
+                    0.5 *
+                    elasticity;
+
+                const offsetY =
+                    dy *
+                    difference *
+                    0.5 *
+                    elasticity;
+
+
+                /*
+                    Move A unless it is a
+                    screen-edge anchor.
+                */
+
+                if (!a.pinned) {
+
+                    a.x += offsetX;
+
+                    a.y += offsetY;
+                }
+
+
+                /*
+                    Move B unless it is a
+                    screen-edge anchor.
+                */
+
+                if (!b.pinned) {
+
+                    b.x -= offsetX;
+
+                    b.y -= offsetY;
+                }
             }
         }
     }
 
 
     /*
-        Calculate movement intensity.
-
-        This is used only to occasionally
-        produce a very subtle silk-rustling
-        sound.
+        -----------------------------------------------------
+        3. KEEP SCREEN ANCHORS ON THE SCREEN
+        -----------------------------------------------------
     */
 
-    let movement = 0;
+    for (const p of particles) {
 
-    for (const p of points) {
+        if (!p.pinned)
+            continue;
 
-        movement +=
-            Math.abs(
-                p.x - p.oldX
-            ) +
-            Math.abs(
-                p.y - p.oldY
-            );
-    }
+        /*
+            A pinned particle can only be at
+            its original screen-edge location.
 
-    movement /=
-        points.length;
-
-    if (
-        movement > 0.3 &&
-        movement < 8 &&
-        Math.random() < 0.015
-    ) {
-
-        playWebRustle(
-            Math.min(
-                1,
-                movement / 4
-            )
-        );
+            We don't change its position here,
+            so it remains perfectly attached.
+        */
     }
 }
 
 
 /* =========================================================
-   DRAW STRAND
+   DRAW ONE STRAND
 ========================================================= */
 
 function drawStrand(strand) {
@@ -1194,7 +1064,7 @@ function drawStrand(strand) {
     }
 
     ctx.strokeStyle =
-        "rgba(180,200,255,0.07)";
+        "rgba(180,200,255,0.06)";
 
     ctx.lineWidth = 5;
 
@@ -1225,7 +1095,7 @@ function drawStrand(strand) {
     }
 
     ctx.strokeStyle =
-        "rgba(225,230,240,0.88)";
+        "rgba(225,230,240,0.9)";
 
     ctx.lineWidth =
         STRAND_WIDTH;
@@ -1238,7 +1108,7 @@ function drawStrand(strand) {
 
 
 /* =========================================================
-   TEMPORARY STRAND
+   DRAW TEMPORARY STRAND
 ========================================================= */
 
 function drawTemporaryStrand() {
@@ -1246,26 +1116,27 @@ function drawTemporaryStrand() {
     if (!currentStrand)
         return;
 
-    const points =
-        currentStrand.points;
+    const start =
+        currentStrand.start;
 
-    if (points.length < 2)
-        return;
+    const end =
+        currentStrand.currentEnd;
+
 
     ctx.beginPath();
 
     ctx.moveTo(
-        points[0].x,
-        points[0].y
+        start.x,
+        start.y
     );
 
     ctx.lineTo(
-        points[1].x,
-        points[1].y
+        end.x,
+        end.y
     );
 
     ctx.strokeStyle =
-        "rgba(200,215,255,0.5)";
+        "rgba(200,215,255,0.55)";
 
     ctx.lineWidth = 1.2;
 
@@ -1277,6 +1148,65 @@ function drawTemporaryStrand() {
     ctx.stroke();
 
     ctx.setLineDash([]);
+}
+
+
+/* =========================================================
+   DRAW CONNECTION POINTS
+========================================================= */
+
+function drawConnectionPoints() {
+
+    /*
+        Find particles that are shared by
+        multiple strands.
+    */
+
+    const usage =
+        new Map();
+
+    for (const strand of strands) {
+
+        for (const point of strand.points) {
+
+            usage.set(
+                point,
+                (usage.get(point) || 0) + 1
+            );
+        }
+    }
+
+
+    /*
+        Draw only actual web-to-web
+        junctions.
+
+        Screen anchors are not highlighted.
+    */
+
+    for (const [point, count] of usage) {
+
+        if (
+            count < 2 ||
+            point.pinned
+        )
+            continue;
+
+        ctx.beginPath();
+
+        ctx.arc(
+            point.x,
+            point.y,
+            2.5,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fillStyle =
+            "rgba(235,240,255,0.8)";
+
+        ctx.fill();
+    }
 }
 
 
@@ -1293,6 +1223,11 @@ function draw() {
         H
     );
 
+
+    /*
+        Background.
+    */
+
     ctx.fillStyle =
         "#05070a";
 
@@ -1304,15 +1239,35 @@ function draw() {
     );
 
 
-    for (const strand of strands) {
+    /*
+        Physics first.
+    */
 
-        simulateStrand(strand);
+    simulatePhysics();
+
+
+    /*
+        Draw all strands.
+    */
+
+    for (const strand of strands) {
 
         drawStrand(strand);
     }
 
 
+    /*
+        Current strand.
+    */
+
     drawTemporaryStrand();
+
+
+    /*
+        Web-to-web contact points.
+    */
+
+    drawConnectionPoints();
 }
 
 
@@ -1343,6 +1298,8 @@ document
         () => {
 
             strands = [];
+
+            particles = [];
 
             currentStrand = null;
 
