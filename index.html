@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Spider Silk Simulator</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="ui">
+
+        <button id="clear">Clear</button>
+
+        <label for="gravitySlider">
+            Gravity
+        </label>
+
+        <input
+            id="gravitySlider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value="0.28"
+        >
+
+        <span id="gravityValue">0.28</span>
+
+        <span class="hint">
+            Drag from an edge or existing strand
+        </span>
+
+    </div>
+
+    <script src="script.js"></script>
+
+</body>
+</html>
